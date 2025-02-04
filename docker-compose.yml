@@ -1,0 +1,142 @@
+version: "3.9"
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    networks:
+      - broker-kafka
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    networks:
+      - broker-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: [ "CMD", "nc", "-zv", "localhost", "9092" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  kafdrop:
+    image: obsidiandynamics/kafdrop:latest
+    networks:
+      - broker-kafka
+    depends_on:
+      - kafka
+    ports:
+      - "9000:9000"
+    environment:
+      KAFKA_BROKERCONNECT: kafka:29092
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  mongo:
+    image: mongo
+    restart: always
+    networks:
+      - broker-kafka
+    ports:
+      - "27018:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    healthcheck:
+      test: [
+        "CMD", "mongosh", "--eval", "db.runCommand({ ping: 1 })",
+        "--username", "${MONGO_INITDB_ROOT_USERNAME}",
+        "--password", "${MONGO_INITDB_ROOT_PASSWORD}",
+        "--authenticationDatabase", "admin"
+      ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  nginx:
+    image: nginx:latest
+    networks:
+      - broker-kafka
+    ports:
+      - "8084:8084"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./.htpasswd:/etc/nginx/.htpasswd:ro
+      - ./html:/usr/share/nginx/html
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf -u ******** http://localhost:8084 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+
+  mongo-express:
+    image: mongo-express
+    restart: always
+    networks:
+      - broker-kafka
+    ports:
+      - "8083:8081"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      nginx:
+        condition: service_started
+    environment:
+      ME_CONFIG_LOG_LEVEL: "error"
+      ME_CONFIG_BASICAUTH_USERNAME: "LucasBorges"
+      ME_CONFIG_BASICAUTH_PASSWORD: "********"
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${ME_CONFIG_MONGODB_ADMINUSERNAME}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${ME_CONFIG_MONGODB_ADMINPASSWORD}
+      ME_CONFIG_MONGODB_URL: mongodb://${ME_CONFIG_MONGODB_ADMINUSERNAME}:${ME_CONFIG_MONGODB_ADMINPASSWORD}@mongo:27017/
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q -O - --user=LucasBorges --password=******** http://nginx:8084/ || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  wiremock:
+    image: wiremock/wiremock:latest
+    container_name: my_wiremock
+    networks:
+      - broker-kafka
+    volumes:
+      - ./extensions:/var/wiremock/extensions
+      - ./__files:/home/wiremock/__files
+      - ./mappings:/home/wiremock/mappings
+    entrypoint:
+      - /docker-entrypoint.sh
+      - --port
+      - "8082"
+      - --global-response-templating
+      - --local-response-templating
+      - --disable-gzip
+      - --verbose
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8082/__admin/mappings" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  broker-kafka:
+    driver: bridge
